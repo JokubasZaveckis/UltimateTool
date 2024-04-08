@@ -1,128 +1,163 @@
 ﻿using System;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Windows.Forms;
 
 namespace UltimateTool
 {
     public partial class Screenshot : Form
     {
-        private Main mainForm;
-        private Overlay overlay;
+        private Main parentForm;
+        private Screen screen;
+        private bool isDrawing = false;
+        private Point startPoint;
+        private Rectangle currentRect = Rectangle.Empty;
+        private Bitmap screenshot;
 
-        private System.Drawing.Image myImage;
-        private Rectangle selectionRect = new Rectangle();
-        private Point startLocation;
-        private bool isSelecting = false;
-
-
-
-        public Screenshot(Main mainForm)
+        public Screenshot(Screen screen, Main parentForm)
         {
-            this.mainForm = mainForm;
-            InitializeComponent();
-            overlay = new Overlay(this);
+            this.screen = screen;
+            this.parentForm = parentForm;
+            InitializeOverlayForm(screen);
+            this.MouseDown += Overlay_MouseDown;
+            this.MouseMove += Overlay_MouseMove;
+            this.MouseUp += Overlay_MouseUp;
             this.KeyPreview = true;
         }
 
-        private void button1_Click(object sender, EventArgs e) // take a screenshot button
+        private void InitializeOverlayForm(Screen screen)
         {
-            // Check if overlay is null or disposed, and only then create a new instance
-            if (overlay == null || overlay.IsDisposed)
-            {
-                overlay = new Overlay(this);
-                overlay.StartPosition = FormStartPosition.Manual;
-                overlay.Bounds = SystemInformation.VirtualScreen; // This should already span all monitors - doesnt work :)
-            }
+            this.BackColor = Color.Gray; // Placeholder, actual color not visible due to opacity
+            this.Opacity = 0.3; // Set to 30% opacity
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.Bounds = screen.Bounds;
+            this.StartPosition = FormStartPosition.Manual;
+            this.Location = screen.Bounds.Location;
+            this.TopMost = true;
+            this.ShowInTaskbar = false;
+            this.Cursor = Cursors.Cross;
+            this.DoubleBuffered = true;
 
-            overlay.Show();
-            this.Hide();
-
-            overlay.MouseDown -= OverlayForm_MouseDown;
-            overlay.MouseDown += OverlayForm_MouseDown;
-            overlay.MouseMove -= OverlayForm_MouseMove;
-            overlay.MouseMove += OverlayForm_MouseMove;
-            overlay.MouseUp -= OverlayForm_MouseUp;
-            overlay.MouseUp += OverlayForm_MouseUp;
+            this.SetStyle(ControlStyles.DoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+            this.UpdateStyles();
         }
 
-        private void button2_Click(object sender, EventArgs e) // bind a button
+        public void ShowOverlay()
         {
+            this.Show();
+        }
 
+        private void Overlay_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                // Reset rectangles in all overlays before starting a new drawing.
+                parentForm.ResetAllOverlays();
+
+                // Now proceed to start drawing the new rectangle.
+                isDrawing = true;
+                startPoint = e.Location;
+                currentRect = new Rectangle(e.Location, new Size(0, 0));
+                this.Invalidate(); // Invalidate to ensure the overlay is redrawn.
+            }
+        }
+
+        private void Overlay_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (isDrawing)
+            {
+                currentRect = new Rectangle(Math.Min(startPoint.X, e.X), Math.Min(startPoint.Y, e.Y), Math.Abs(e.X - startPoint.X), Math.Abs(e.Y - startPoint.Y));
+                this.Invalidate();
+            }
+        }
+
+        private void Overlay_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (isDrawing)
+            {
+                isDrawing = false;
+                CaptureScreenshot();
+            }
+        }
+
+        private void CaptureScreenshot()
+        {
+            if (currentRect.Width > 0 && currentRect.Height > 0)
+            {
+                screenshot = new Bitmap(currentRect.Width, currentRect.Height, PixelFormat.Format32bppArgb);
+                this.Visible = false;
+                using (Graphics g = Graphics.FromImage(screenshot))
+                {
+                    g.CopyFromScreen(new Point(currentRect.Left + screen.Bounds.Left, currentRect.Top + screen.Bounds.Top), Point.Empty, currentRect.Size);
+                }
+                this.Visible = true;
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+
+            // Create a region that covers the entire screen
+            Region overlayRegion = new Region(this.ClientRectangle);
+
+            // If there's a selection, exclude it from the overlay region
+            if (!currentRect.IsEmpty)
+            {
+                overlayRegion.Exclude(currentRect);
+            }
+
+            // Apply semi-transparent overlay to only the non-excluded parts of the screen
+            using (SolidBrush brush = new SolidBrush(Color.FromArgb(200, 0, 0, 0))) // Use semi-transparent gray color
+            {
+                e.Graphics.FillRegion(brush, overlayRegion);
+            }
+
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.C))
+            {
+                if (screenshot != null)
+                {
+                    Clipboard.SetImage(screenshot);
+                    parentForm.CloseAllOverlays(); // Close all overlays
+                    return true; // Key press handled
+                }
+            }
+            else if (keyData == (Keys.Control | Keys.S))
+            {
+                if (screenshot != null)
+                {
+                    string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                    string fileName = $"screenshot_{DateTime.Now:yyyyMMdd_HHmmss}.png";
+                    string filePath = System.IO.Path.Combine(desktopPath, fileName);
+                    screenshot.Save(filePath, System.Drawing.Imaging.ImageFormat.Png);
+
+                    parentForm.CloseAllOverlays(); // Close all overlays
+                    return true; // Key press handled
+                }
+            }
+            else if (keyData == Keys.Escape)
+            {
+                parentForm.CloseAllOverlays(); // Close all overlays
+                return true; // Key press handled
+            }
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        public void ResetCurrentRect()
+        {
+            currentRect = Rectangle.Empty;
+            this.Invalidate(); // This ensures the overlay is redrawn without the previous rectangle.
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             base.OnFormClosed(e);
-            mainForm.WindowState = FormWindowState.Normal;
-        }
-
-        private void OverlayForm_MouseDown(object sender, MouseEventArgs e)
-        {
-            if (e.Button == MouseButtons.Left)
-            {
-                if (!isSelecting)
-                {
-                    isSelecting = true;
-                    startLocation = e.Location;
-                }
-            }
-        }
-
-        private void OverlayForm_MouseMove(object sender, MouseEventArgs e)
-        {
-            if (isSelecting)
-            {
-                int left = Math.Min(startLocation.X, e.X);
-                int top = Math.Min(startLocation.Y, e.Y);
-                int width = Math.Abs(e.X - startLocation.X);
-                int height = Math.Abs(e.Y - startLocation.Y);
-
-                selectionRect = new Rectangle(left, top, width, height);
-
-                overlay.Invalidate();
-            }
-        }
-
-        private void OverlayForm_MouseUp(object sender, MouseEventArgs e)
-        {
-            if (isSelecting)
-            {
-                // Check if the width and height of the selection rectangle are greater than zero
-                if (selectionRect.Width > 0 && selectionRect.Height > 0)
-                {
-                    // Capture only the selected region
-                    Bitmap screenshot = new Bitmap(selectionRect.Width, selectionRect.Height);
-                    using (Graphics g = Graphics.FromImage(screenshot))
-                    {
-                        g.CopyFromScreen(selectionRect.Location, Point.Empty, screenshot.Size);
-                    }
-
-                    myImage = screenshot;
-
-                    isSelecting = false;
-                }
-            }
-        }
-
-        public bool IsSelecting
-        {
-            get { return isSelecting; }
-            set { isSelecting = value; }
-        }
-
-        public Overlay OverlayForm
-        {
-            get { return overlay; }
-        }
-
-        public Rectangle SelectionRect
-        {
-            get { return selectionRect; }
-        }
-
-        public Image MyImage
-        {
-            get { return myImage; }
+            parentForm.WindowState = FormWindowState.Normal;
         }
     }
 }
